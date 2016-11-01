@@ -7,6 +7,7 @@ import (
 	"github.com/stefankopieczek/gossip/base"
 	"github.com/stefankopieczek/gossip/log"
 	"github.com/stefankopieczek/gossip/transaction"
+	"github.com/stefankopieczek/gossip/transport"
 )
 
 type endpoint struct {
@@ -41,7 +42,8 @@ type txInfo struct {
 }
 
 func (e *endpoint) Start() error {
-	tm, err := transaction.NewManager(e.transport, fmt.Sprintf("%v:%v", e.host, e.port))
+	var transManager transport.Manager
+	tm, err := transaction.NewManager(transManager, fmt.Sprintf("%v:%v", e.host, e.port))
 	if err != nil {
 		return err
 	}
@@ -68,7 +70,7 @@ func (caller *endpoint) Invite(callee *endpoint) error {
 	invite := base.NewRequest(
 		base.INVITE,
 		&base.SipUri{
-			User: &callee.username,
+			User: &base.String{ S: callee.username},
 			Host: callee.host,
 			Port: &callee.port,
 		},
@@ -104,9 +106,10 @@ func (caller *endpoint) Invite(callee *endpoint) error {
 			log.Info("Received response: %v", r.Short())
 			log.Debug("Full form:\n%v\n", r.String())
 			// Get To tag if present.
-			tag, ok := r.Headers("To")[0].(*base.ToHeader).Params["tag"]
+			params := r.Headers("To")[0].(*base.ToHeader).Params.Items()
+			tag, ok := params["tag"]
 			if ok {
-				caller.dialog.to_tag = *tag
+				caller.dialog.to_tag = tag.(*base.String).S
 			}
 
 			switch {
@@ -141,7 +144,7 @@ func (caller *endpoint) nonInvite(callee *endpoint, method base.Method) error {
 		request = base.NewRequest(
 			method,
 			&base.SipUri{
-				User: &callee.username,
+				User: &base.String{ S: callee.username},
 				Host: callee.host,
 				Port: &callee.port,
 			},
@@ -167,20 +170,20 @@ func (caller *endpoint) nonInvite(callee *endpoint, method base.Method) error {
 			[]base.SipHeader{
 				Via(caller, caller.dialog.currentTx.branch),
 				&base.ToHeader{
-					DisplayName: &caller.displayName,
+					DisplayName: &base.String{ S: caller.displayName},
 					Address: &base.SipUri{
-						User: &caller.username,
+						User: &base.String{ S: caller.username},
 						Host: callee.host,
 					},
-					Params: base.Params{},
+					Params: base.NewParams(),
 				},
 				&base.FromHeader{
-					DisplayName: &caller.displayName,
+					DisplayName: &base.String{ S: caller.displayName},
 					Address: &base.SipUri{
-						User: &caller.username,
+						User: &base.String{ S: caller.username},
 						Host: callee.host,
 					},
-					Params: base.Params{},
+					Params: base.NewParams(),
 				},
 				Contact(caller),
 				CSeq(caller.dialog.cseq, method),
@@ -253,9 +256,9 @@ func (e *endpoint) ServeInvite() {
 	base.CopyHeaders("CSeq", tx.Origin(), resp)
 	resp.AddHeader(
 		&base.ContactHeader{
-			DisplayName: &e.displayName,
+			DisplayName: &base.String{ S: e.displayName},
 			Address: &base.SipUri{
-				User: &e.username,
+				User: &base.String{ S: e.username},
 				Host: e.host,
 			},
 		},
@@ -310,9 +313,9 @@ func (e *endpoint) HandleNonInvite(tx *transaction.ServerTransaction) {
 	} else {
 		resp.AddHeader(
 			&base.ContactHeader{
-				DisplayName: &e.displayName,
+				DisplayName: &base.String{ S: e.displayName},
 				Address: &base.SipUri{
-					User: &e.username,
+					User: &base.String{ S: e.username},
 					Host: e.host,
 				},
 			},
