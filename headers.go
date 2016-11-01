@@ -5,6 +5,9 @@ import "github.com/stefankopieczek/gossip/base"
 // Utility methods for creating headers.
 
 func Via(e *endpoint, branch string) *base.ViaHeader {
+	params := base.NewParams()
+	items := params.Items()
+	items["branch"] = &base.String{S: branch}
 	return &base.ViaHeader{
 		&base.ViaHop{
 			ProtocolName:    "SIP",
@@ -12,46 +15,50 @@ func Via(e *endpoint, branch string) *base.ViaHeader {
 			Transport:       e.transport,
 			Host:            e.host,
 			Port:            &e.port,
-			Params: base.Params{
-				"branch": &branch,
-			},
+			Params:          params,
 		},
 	}
 }
 
 func To(e *endpoint, tag string) *base.ToHeader {
+	params := base.NewParams()
+	items := params.Items()
+	items["transport"] = &base.String{S: e.transport}
 	header := &base.ToHeader{
-		DisplayName: &e.displayName,
+		DisplayName: &base.String{S: e.displayName},
 		Address: &base.SipUri{
-			User:      &e.username,
+			User:      &base.String{S: e.username},
 			Host:      e.host,
-			UriParams: base.Params{},
+			UriParams: params,
 		},
-		Params: base.Params{},
+		Params: base.NewParams(),
 	}
 
 	if tag != "" {
-		header.Params["tag"] = &tag
+		items := header.Params.Items()
+		items["tag"] = &base.String{S: tag}
 	}
 
 	return header
 }
 
 func From(e *endpoint, tag string) *base.FromHeader {
+	params := base.NewParams()
+	items := params.Items()
+	items["transport"] = &base.String{S: e.transport}
 	header := &base.FromHeader{
-		DisplayName: &e.displayName,
+		DisplayName: &base.String{S: e.displayName},
 		Address: &base.SipUri{
-			User: &e.username,
+			User: &base.String{S: e.username},
 			Host: e.host,
-			UriParams: base.Params{
-				"transport": &e.transport,
-			},
+			UriParams: params,
 		},
-		Params: base.Params{},
+		Params: base.NewParams(),
 	}
 
 	if tag != "" {
-		header.Params["tag"] = &tag
+		items := header.Params.Items()
+		items["tag"] = &base.String{S: tag}
 	}
 
 	return header
@@ -59,10 +66,11 @@ func From(e *endpoint, tag string) *base.FromHeader {
 
 func Contact(e *endpoint) *base.ContactHeader {
 	return &base.ContactHeader{
-		DisplayName: &e.displayName,
+		DisplayName: &base.String{S: e.displayName},
 		Address: &base.SipUri{
-			User: &e.username,
+			User: &base.String{S: e.username},
 			Host: e.host,
+			Port: &e.port,
 		},
 	}
 }

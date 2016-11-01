@@ -7,6 +7,7 @@ import (
 	"github.com/stefankopieczek/gossip/base"
 	"github.com/stefankopieczek/gossip/log"
 	"github.com/stefankopieczek/gossip/transaction"
+	"github.com/stefankopieczek/gossip/transport"
 )
 
 type endpoint struct {
@@ -14,10 +15,12 @@ type endpoint struct {
 	displayName string
 	username    string
 	host        string
+	port        uint16 // Listens on this port.
 
 	// Transport Params
-	port      uint16 // Listens on this port.
-	transport string // Sends using this transport. ("tcp" or "udp")
+	proxy      string // Proxy host
+	proxy_port uint16 // Proxy host
+	transport  string // Sends using this transport. ("tcp" or "udp")
 
 	// Internal guts
 	tm       *transaction.Manager
@@ -39,7 +42,8 @@ type txInfo struct {
 }
 
 func (e *endpoint) Start() error {
-	tm, err := transaction.NewManager(e.transport, fmt.Sprintf("%v:%v", e.host, e.port))
+	var transManager transport.Manager
+	tm, err := transaction.NewManager(transManager, fmt.Sprintf("%v:%v", e.host, e.port))
 	if err != nil {
 		return err
 	}
@@ -66,8 +70,9 @@ func (caller *endpoint) Invite(callee *endpoint) error {
 	invite := base.NewRequest(
 		base.INVITE,
 		&base.SipUri{
-			User: &callee.username,
+			User: &base.String{ S: callee.username},
 			Host: callee.host,
+			Port: &callee.port,
 		},
 		"SIP/2.0",
 		[]base.SipHeader{
@@ -84,7 +89,16 @@ func (caller *endpoint) Invite(callee *endpoint) error {
 	caller.dialog.cseq += 1
 
 	log.Info("Sending: %v", invite.Short())
-	tx := caller.tm.Send(invite, fmt.Sprintf("%v:%v", callee.host, callee.port))
+	var dest string
+	var port uint16
+	if len(callee.proxy) != 0 {
+		dest = callee.proxy
+		port = callee.proxy_port
+	} else {
+		dest = callee.host
+		port = callee.port
+	}
+	tx := caller.tm.Send(invite, fmt.Sprintf("%v:%v", dest, port))
 	caller.dialog.currentTx.tx = transaction.Transaction(tx)
 	for {
 		select {
@@ -92,9 +106,10 @@ func (caller *endpoint) Invite(callee *endpoint) error {
 			log.Info("Received response: %v", r.Short())
 			log.Debug("Full form:\n%v\n", r.String())
 			// Get To tag if present.
-			tag, ok := r.Headers("To")[0].(*base.ToHeader).Params["tag"]
+			params := r.Headers("To")[0].(*base.ToHeader).Params.Items()
+			tag, ok := params["tag"]
 			if ok {
-				caller.dialog.to_tag = *tag
+				caller.dialog.to_tag = tag.(*base.String).S
 			}
 
 			switch {
@@ -114,34 +129,84 @@ func (caller *endpoint) Invite(callee *endpoint) error {
 	}
 }
 
+func (caller *endpoint) Register(callee *endpoint) error {
+	return caller.nonInvite(callee, base.REGISTER)
+}
+
 func (caller *endpoint) Bye(callee *endpoint) error {
 	return caller.nonInvite(callee, base.BYE)
 }
 
 func (caller *endpoint) nonInvite(callee *endpoint, method base.Method) error {
-	caller.dialog.currentTx.branch = "z9hG4bK.callbranch." + string(method)
-	request := base.NewRequest(
-		method,
-		&base.SipUri{
-			User: &callee.username,
-			Host: callee.host,
-		},
-		"SIP/2.0",
-		[]base.SipHeader{
-			Via(caller, caller.dialog.currentTx.branch),
-			To(callee, caller.dialog.to_tag),
-			From(caller, caller.dialog.from_tag),
-			Contact(caller),
-			CSeq(caller.dialog.cseq, method),
-			CallId(caller.dialog.callId),
-			ContentLength(0),
-		},
-		"",
-	)
+	var request *base.Request
+	caller.dialog.currentTx.branch = fmt.Sprintf("z9hG4bK.%v.%v", method, caller.dialog.cseq)
+	if method != base.REGISTER {
+		request = base.NewRequest(
+			method,
+			&base.SipUri{
+				User: &base.String{ S: callee.username},
+				Host: callee.host,
+				Port: &callee.port,
+			},
+			"SIP/2.0",
+			[]base.SipHeader{
+				Via(caller, caller.dialog.currentTx.branch),
+				To(callee, caller.dialog.to_tag),
+				From(caller, caller.dialog.from_tag),
+				Contact(caller),
+				CSeq(caller.dialog.cseq, method),
+				CallId(caller.dialog.callId),
+				ContentLength(0),
+			},
+			"",
+		)
+	} else {
+		request = base.NewRequest(
+			method,
+			&base.SipUri{
+				Host: callee.host,
+			},
+			"SIP/2.0",
+			[]base.SipHeader{
+				Via(caller, caller.dialog.currentTx.branch),
+				&base.ToHeader{
+					DisplayName: &base.String{ S: caller.displayName},
+					Address: &base.SipUri{
+						User: &base.String{ S: caller.username},
+						Host: callee.host,
+					},
+					Params: base.NewParams(),
+				},
+				&base.FromHeader{
+					DisplayName: &base.String{ S: caller.displayName},
+					Address: &base.SipUri{
+						User: &base.String{ S: caller.username},
+						Host: callee.host,
+					},
+					Params: base.NewParams(),
+				},
+				Contact(caller),
+				CSeq(caller.dialog.cseq, method),
+				CallId(caller.dialog.callId),
+				&base.GenericHeader{"Expires", "3600"},
+				ContentLength(0),
+			},
+			"",
+		)
+	}
 	caller.dialog.cseq += 1
 
 	log.Info("Sending: %v", request.Short())
-	tx := caller.tm.Send(request, fmt.Sprintf("%v:%v", callee.host, callee.port))
+	var dest string
+	var port uint16
+	if len(caller.proxy) != 0 {
+		dest = caller.proxy
+		port = caller.proxy_port
+	} else {
+		dest = callee.host
+		port = callee.port
+	}
+	tx := caller.tm.Send(request, fmt.Sprintf("%v:%v", dest, port))
 	caller.dialog.currentTx.tx = transaction.Transaction(tx)
 	for {
 		select {
@@ -191,9 +256,9 @@ func (e *endpoint) ServeInvite() {
 	base.CopyHeaders("CSeq", tx.Origin(), resp)
 	resp.AddHeader(
 		&base.ContactHeader{
-			DisplayName: &e.displayName,
+			DisplayName: &base.String{ S: e.displayName},
 			Address: &base.SipUri{
-				User: &e.username,
+				User: &base.String{ S: e.username},
 				Host: e.host,
 			},
 		},
@@ -211,7 +276,12 @@ func (e *endpoint) ServeInvite() {
 
 func (e *endpoint) ServeNonInvite() {
 	log.Info("Listening for incoming requests...")
-	tx := <-e.tm.Requests()
+	for tx := range e.tm.Requests() {
+		go e.HandleNonInvite(tx)
+	}
+}
+
+func (e *endpoint) HandleNonInvite(tx *transaction.ServerTransaction) {
 	r := tx.Origin()
 	log.Info("Received request: %v", r.Short())
 	log.Debug("Full form:\n%v\n", r.String())
@@ -230,15 +300,27 @@ func (e *endpoint) ServeNonInvite() {
 	base.CopyHeaders("To", tx.Origin(), resp)
 	base.CopyHeaders("Call-Id", tx.Origin(), resp)
 	base.CopyHeaders("CSeq", tx.Origin(), resp)
-	resp.AddHeader(
-		&base.ContactHeader{
-			DisplayName: &e.displayName,
-			Address: &base.SipUri{
-				User: &e.username,
-				Host: e.host,
+	if tx.Origin().Method == base.REGISTER {
+		to := tx.Origin().Headers("To")[0].(*base.ToHeader)
+		resp.AddHeader(
+			&base.ContactHeader{
+				Address: &base.SipUri{
+					User: to.Address.(*base.SipUri).User,
+					Host: to.Address.(*base.SipUri).Host,
+				},
 			},
-		},
-	)
+		)
+	} else {
+		resp.AddHeader(
+			&base.ContactHeader{
+				DisplayName: &base.String{ S: e.displayName},
+				Address: &base.SipUri{
+					User: &base.String{ S: e.username},
+					Host: e.host,
+				},
+			},
+		)
+	}
 
 	log.Info("Sending 200 OK")
 	<-time.After(1 * time.Second)
