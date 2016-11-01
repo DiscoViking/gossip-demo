@@ -1,4 +1,4 @@
-package main
+package demo
 
 import (
 	"fmt"
@@ -7,17 +7,19 @@ import (
 	"github.com/stefankopieczek/gossip/base"
 	"github.com/stefankopieczek/gossip/log"
 	"github.com/stefankopieczek/gossip/transaction"
+	"github.com/stefankopieczek/gossip/transport"
 )
 
-type endpoint struct {
+
+type EndPoint struct {
 	// Sip Params
-	displayName string
-	username    string
-	host        string
+	DisplayName string
+	UserName    string
+	Host        string
 
 	// Transport Params
-	port      uint16 // Listens on this port.
-	transport string // Sends using this transport. ("tcp" or "udp")
+	Port      uint16 // Listens on this Port.
+	Transport string // Sends using this Transport. ("tcp" or "udp")
 
 	// Internal guts
 	tm       *transaction.Manager
@@ -38,8 +40,12 @@ type txInfo struct {
 	branch string                  // The via branch.
 }
 
-func (e *endpoint) Start() error {
-	tm, err := transaction.NewManager(e.transport, fmt.Sprintf("%v:%v", e.host, e.port))
+func (e *EndPoint) Start() error {
+	trm, err := transport.NewManager(e.Transport)
+	if err != nil {
+		return err
+	}
+	tm, err := transaction.NewManager(trm, fmt.Sprintf("%v:%v", e.Host, e.Port))
 	if err != nil {
 		return err
 	}
@@ -49,14 +55,14 @@ func (e *endpoint) Start() error {
 	return nil
 }
 
-func (e *endpoint) ClearDialog() {
-	caller.dialog = dialog{}
+func (e *EndPoint) ClearDialog() {
+	e.dialog = dialog{}
 }
 
-func (caller *endpoint) Invite(callee *endpoint) error {
+func (caller *EndPoint) Invite(callee *EndPoint) error {
 	// Starting a dialog.
 	callid := "thisisacall" + string(caller.dialogIx)
-	tag := "tag." + caller.username + "." + caller.host
+	tag := "tag." + caller.UserName + "." + caller.Host
 	branch := "z9hG4bK.callbranch.INVITE"
 	caller.dialog.callId = callid
 	caller.dialog.from_tag = tag
@@ -66,8 +72,8 @@ func (caller *endpoint) Invite(callee *endpoint) error {
 	invite := base.NewRequest(
 		base.INVITE,
 		&base.SipUri{
-			User: &callee.username,
-			Host: callee.host,
+			User: base.String{S:callee.UserName},
+			Host: callee.Host,
 		},
 		"SIP/2.0",
 		[]base.SipHeader{
@@ -84,7 +90,7 @@ func (caller *endpoint) Invite(callee *endpoint) error {
 	caller.dialog.cseq += 1
 
 	log.Info("Sending: %v", invite.Short())
-	tx := caller.tm.Send(invite, fmt.Sprintf("%v:%v", callee.host, callee.port))
+	tx := caller.tm.Send(invite, fmt.Sprintf("%v:%v", callee.Host, callee.Port))
 	caller.dialog.currentTx.tx = transaction.Transaction(tx)
 	for {
 		select {
@@ -92,9 +98,15 @@ func (caller *endpoint) Invite(callee *endpoint) error {
 			log.Info("Received response: %v", r.Short())
 			log.Debug("Full form:\n%v\n", r.String())
 			// Get To tag if present.
-			tag, ok := r.Headers("To")[0].(*base.ToHeader).Params["tag"]
+			tag, ok := r.Headers("To")[0].(*base.ToHeader).Params.Get("tag")
 			if ok {
-				caller.dialog.to_tag = *tag
+
+				switch str := tag.(type) {
+				case base.String:
+					caller.dialog.to_tag = str.S
+//				case NoString():
+//				    return str.String()
+				}
 			}
 
 			switch {
@@ -114,17 +126,17 @@ func (caller *endpoint) Invite(callee *endpoint) error {
 	}
 }
 
-func (caller *endpoint) Bye(callee *endpoint) error {
+func (caller *EndPoint) Bye(callee *EndPoint) error {
 	return caller.nonInvite(callee, base.BYE)
 }
 
-func (caller *endpoint) nonInvite(callee *endpoint, method base.Method) error {
+func (caller *EndPoint) nonInvite(callee *EndPoint, method base.Method) error {
 	caller.dialog.currentTx.branch = "z9hG4bK.callbranch." + string(method)
 	request := base.NewRequest(
 		method,
 		&base.SipUri{
-			User: &callee.username,
-			Host: callee.host,
+			User: base.String{S:callee.UserName},
+			Host: callee.Host,
 		},
 		"SIP/2.0",
 		[]base.SipHeader{
@@ -141,7 +153,7 @@ func (caller *endpoint) nonInvite(callee *endpoint, method base.Method) error {
 	caller.dialog.cseq += 1
 
 	log.Info("Sending: %v", request.Short())
-	tx := caller.tm.Send(request, fmt.Sprintf("%v:%v", callee.host, callee.port))
+	tx := caller.tm.Send(request, fmt.Sprintf("%v:%v", callee.Host, callee.Port))
 	caller.dialog.currentTx.tx = transaction.Transaction(tx)
 	for {
 		select {
@@ -166,7 +178,7 @@ func (caller *endpoint) nonInvite(callee *endpoint, method base.Method) error {
 
 // Server side function.
 
-func (e *endpoint) ServeInvite() {
+func (e *EndPoint) ServeInvite() {
 	log.Info("Listening for incoming requests...")
 	tx := <-e.tm.Requests()
 	r := tx.Origin()
@@ -191,10 +203,10 @@ func (e *endpoint) ServeInvite() {
 	base.CopyHeaders("CSeq", tx.Origin(), resp)
 	resp.AddHeader(
 		&base.ContactHeader{
-			DisplayName: &e.displayName,
+			DisplayName: base.String{S:e.DisplayName},
 			Address: &base.SipUri{
-				User: &e.username,
-				Host: e.host,
+				User: base.String{S:e.UserName},
+				Host: e.Host,
 			},
 		},
 	)
@@ -209,7 +221,7 @@ func (e *endpoint) ServeInvite() {
 	log.Debug("Full form:\n%v\n", ack.String())
 }
 
-func (e *endpoint) ServeNonInvite() {
+func (e *EndPoint) ServeNonInvite() {
 	log.Info("Listening for incoming requests...")
 	tx := <-e.tm.Requests()
 	r := tx.Origin()
@@ -232,10 +244,10 @@ func (e *endpoint) ServeNonInvite() {
 	base.CopyHeaders("CSeq", tx.Origin(), resp)
 	resp.AddHeader(
 		&base.ContactHeader{
-			DisplayName: &e.displayName,
+			DisplayName: base.String{S:e.DisplayName},
 			Address: &base.SipUri{
-				User: &e.username,
-				Host: e.host,
+				User: base.String{S:e.UserName},
+				Host: e.Host,
 			},
 		},
 	)
@@ -244,3 +256,4 @@ func (e *endpoint) ServeNonInvite() {
 	<-time.After(1 * time.Second)
 	tx.Respond(resp)
 }
+
